@@ -1,0 +1,372 @@
+import cv2
+import numpy as np
+from datetime import datetime
+
+# Загружаем модели для распознавания лиц и возраста
+face_cascade_db = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_eye.xml")
+
+# Проверяем загрузились ли каскады
+if face_cascade_db.empty():
+    print("Ошибка: Не удалось загрузить каскад для лиц!")
+    exit()
+if eye_cascade.empty():
+    print("Ошибка: Не удалось загрузить каскад для глаз!")
+    exit()
+
+print("Каскады загружены успешно")
+
+
+# Упрощенная система распознавания лиц
+class SimpleFaceRecognizer:
+    def __init__(self):
+        self.known_faces = {}  # имя -> список изображений лиц
+        self.face_counter = 1
+
+    def add_face(self, face_img, name=None):
+        if name is None:
+            name = f"Человек_{self.face_counter}"
+            self.face_counter += 1
+
+        if name not in self.known_faces:
+            self.known_faces[name] = []
+
+        # Сохраняем уменьшенное изображение для сравнения
+        face_resized = cv2.resize(face_img, (100, 100))
+        gray_face = cv2.cvtColor(face_resized, cv2.COLOR_BGR2GRAY)
+        self.known_faces[name].append(gray_face)
+
+        # Ограничиваем количество сохраненных образцов
+        if len(self.known_faces[name]) > 10:
+            self.known_faces[name] = self.known_faces[name][-10:]
+
+        return name
+
+    def recognize_face(self, face_img):
+        if face_img is None or face_img.size == 0:
+            return None, 0
+
+        face_resized = cv2.resize(face_img, (100, 100))
+        gray_face = cv2.cvtColor(face_resized, cv2.COLOR_BGR2GRAY)
+
+        best_match = None
+        best_score = float('inf')
+
+        for name, samples in self.known_faces.items():
+            for sample in samples:
+                # Простое сравнение по разнице пикселей
+                diff = cv2.absdiff(gray_face, sample)
+                score = np.sum(diff) / (100 * 100)  # Средняя разница
+
+                if score < best_score:
+                    best_score = score
+                    best_match = name
+
+        # Порог для распознавания
+        if best_match and best_score < 30:  # Чем меньше, тем лучше совпадение
+            confidence = max(0, 100 - best_score * 2)
+            return best_match, confidence
+        else:
+            return None, 0
+
+
+# Инициализация нашего распознавателя
+face_recognizer = SimpleFaceRecognizer()
+
+# Возрастные группы для классификации
+age_groups = [
+    (0, 2, "Младенец"),
+    (3, 12, "Ребенок"),
+    (13, 17, "Подросток"),
+    (18, 25, "Молодой"),
+    (26, 35, "Взрослый"),
+    (36, 50, "Средний возраст"),
+    (51, 70, "Пожилой"),
+    (71, 120, "Старик")
+]
+
+
+def estimate_age(face_img):
+    """
+    Оцениваем примерный возраст по изображению лица
+    """
+    if face_img is None or face_img.size == 0:
+        return "Недостаточно данных"
+
+    if len(face_img.shape) == 3:
+        height, width = face_img.shape[:2]
+    else:
+        height, width = face_img.shape
+
+    if height < 20 or width < 20:
+        return "Маленькое лицо"
+
+    # Преобразуем в оттенки серого если нужно
+    if len(face_img.shape) == 3:
+        gray_face = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
+    else:
+        gray_face = face_img
+
+    # Анализ текстур
+    try:
+        laplacian_var = cv2.Laplacian(gray_face, cv2.CV_64F).var()
+    except:
+        laplacian_var = 50
+
+    # Эвристические правила для определения возраста
+    if laplacian_var < 80:
+        return "Молодой (18-30)"
+    elif laplacian_var < 150:
+        return "Взрослый (30-50)"
+    else:
+        return "Пожилой (50+)"
+
+
+# Инициализация видео потока
+print("Пытаюсь открыть камеру...")
+cap = cv2.VideoCapture(0)
+
+# Пробуем разные индексы камеры если 0 не работает
+if not cap.isOpened():
+    print("Камера 0 не открылась, пробую камеру 1...")
+    cap = cv2.VideoCapture(1)
+
+if not cap.isOpened():
+    print("Камера 1 не открылась, пробую камеру 2...")
+    cap = cv2.VideoCapture(2)
+
+if not cap.isOpened():
+    print("Ошибка: Не удалось открыть камеру!")
+    print("Возможные решения:")
+    print("1. Проверьте подключение камеры")
+    print("2. Дайте разрешение на доступ к камере")
+    print("3. Закройте другие программы, использующие камеру")
+    exit()
+
+# Устанавливаем разрешение
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
+print("Камера успешно открыта!")
+
+# Создаем окно с правильными параметрами
+cv2.namedWindow('Распознавание лиц', cv2.WINDOW_NORMAL)
+cv2.resizeWindow('Распознавание лиц', 800, 600)
+
+print("\n" + "=" * 50)
+print("Система распознавания лиц с определением возраста")
+print("=" * 50)
+print("Управление:")
+print("  's' - сохранить текущее лицо")
+print("  'r' - распознать выделенное лицо")
+print("  'n' - следующее лицо")
+print("  'q' - выход")
+print("=" * 50)
+
+# Словарь для отслеживания лиц
+current_faces = {}
+selected_face_id = None
+frame_count = 0
+
+try:
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("Не удалось получить кадр")
+            break
+
+        # Уменьшаем размер кадра для более быстрой обработки
+        frame_small = cv2.resize(frame, (640, 480))
+
+        # Конвертируем в оттенки серого
+        gray = cv2.cvtColor(frame_small, cv2.COLOR_BGR2GRAY)
+        gray_eq = cv2.equalizeHist(gray)
+
+        # Детекция лиц
+        faces = face_cascade_db.detectMultiScale(
+            gray_eq,
+            scaleFactor=1.1,
+            minNeighbors=5,
+            minSize=(60, 60)
+        )
+
+        # Если лиц нет, сбрасываем выбранное лицо
+        if len(faces) == 0:
+            selected_face_id = None
+
+        # Обрабатываем каждое лицо
+        for i, (x, y, w, h) in enumerate(faces):
+            face_id = f"face_{i}"
+
+            # Извлекаем лицо
+            face_roi = frame_small[y:y + h, x:x + w]
+
+            if face_roi.size == 0:
+                continue
+
+            # Если это первое лицо и нет выбранного, выбираем его
+            if i == 0 and selected_face_id is None:
+                selected_face_id = face_id
+
+            # Инициализируем информацию о лице
+            if face_id not in current_faces:
+                current_faces[face_id] = {
+                    'name': f"Неизвестный_{i + 1}",
+                    'confidence': 0,
+                    'age': estimate_age(face_roi),
+                    'detected_frames': 0
+                }
+
+            current_faces[face_id]['detected_frames'] += 1
+
+            # Пытаемся распознать лицо каждые 10 кадров
+            if frame_count % 10 == 0 and current_faces[face_id]['detected_frames'] > 5:
+                name, confidence = face_recognizer.recognize_face(face_roi)
+                if name:
+                    current_faces[face_id]['name'] = name
+                    current_faces[face_id]['confidence'] = confidence
+
+            # Обновляем возраст
+            if frame_count % 20 == 0:
+                current_faces[face_id]['age'] = estimate_age(face_roi)
+
+            # Выбираем цвет для рамки
+            if face_id == selected_face_id:
+                color = (0, 165, 255)  # Оранжевый
+                thickness = 3
+            elif current_faces[face_id]['confidence'] > 70:
+                color = (0, 255, 0)  # Зеленый
+                thickness = 2
+            else:
+                color = (0, 255, 255)  # Желтый
+                thickness = 2
+
+            # Рисуем прямоугольник вокруг лица
+            cv2.rectangle(frame_small, (x, y), (x + w, y + h), color, thickness)
+
+            # Отображаем информацию
+            face_info = current_faces[face_id]
+
+            # Подготовка текста
+            name_text = face_info['name']
+            if face_info['confidence'] > 0:
+                name_text += f" ({int(face_info['confidence'])}%)"
+
+            # Фон для текста
+            text_y = max(15, y - 10)
+            text_bg_y1 = text_y - 25
+            text_bg_y2 = text_y + 10
+
+            cv2.rectangle(frame_small,
+                          (x, text_bg_y1),
+                          (x + w, text_bg_y2),
+                          (0, 0, 0), -1)
+
+            # Имя
+            cv2.putText(frame_small, name_text,
+                        (x, text_y - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                        (255, 255, 255), 1)
+
+            # Возраст
+            cv2.putText(frame_small, face_info['age'],
+                        (x, text_y + 5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                        (255, 200, 100), 1)
+
+        # Удаляем старые лица
+        faces_to_remove = []
+        for face_id in list(current_faces.keys()):
+            if current_faces[face_id]['detected_frames'] == 0:
+                faces_to_remove.append(face_id)
+            else:
+                current_faces[face_id]['detected_frames'] = 0
+
+        for face_id in faces_to_remove:
+            del current_faces[face_id]
+
+        # Статистика
+        cv2.putText(frame_small, f"Лиц в кадре: {len(faces)}",
+                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7, (255, 255, 255), 2)
+
+        cv2.putText(frame_small, "s-сохранить, r-распознать, n-следующее, q-выход",
+                    (10, 60), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5, (200, 200, 200), 1)
+
+        # Показываем кадр
+        cv2.imshow('Распознавание лиц', frame_small)
+
+        frame_count += 1
+
+        # Обработка клавиш
+        key = cv2.waitKey(1) & 0xFF
+
+        if key == ord('q'):
+            print("Выход...")
+            break
+
+        elif key == ord('s') and selected_face_id and len(faces) > 0:
+            # Сохраняем выбранное лицо
+            for i, (x, y, w, h) in enumerate(faces):
+                if f"face_{i}" == selected_face_id:
+                    face_roi = frame_small[y:y + h, x:x + w]
+                    if face_roi.size > 0:
+                        print("\n" + "=" * 40)
+                        name_input = input("Введите имя для лица (Enter для автоимени): ")
+                        name = name_input.strip() if name_input.strip() else None
+
+                        saved_name = face_recognizer.add_face(face_roi, name)
+                        print(f"✓ Лицо сохранено как: {saved_name}")
+                        print("=" * 40)
+
+                        # Обновляем текущую информацию
+                        current_faces[selected_face_id]['name'] = saved_name
+                        current_faces[selected_face_id]['confidence'] = 100
+                    break
+
+        elif key == ord('r') and selected_face_id and len(faces) > 0:
+            # Распознаем выбранное лицо
+            for i, (x, y, w, h) in enumerate(faces):
+                if f"face_{i}" == selected_face_id:
+                    face_roi = frame_small[y:y + h, x:x + w]
+                    if face_roi.size > 0:
+                        name, confidence = face_recognizer.recognize_face(face_roi)
+                        if name:
+                            print(f"✓ Распознано как: {name} ({confidence:.1f}%)")
+                            current_faces[selected_face_id]['name'] = name
+                            current_faces[selected_face_id]['confidence'] = confidence
+                        else:
+                            print("✗ Лицо не распознано")
+                    break
+
+        elif key == ord('n') and len(faces) > 0:
+            # Переключаем на следующее лицо
+            current_idx = int(selected_face_id.split('_')[1]) if selected_face_id else 0
+            next_idx = (current_idx + 1) % len(faces)
+            selected_face_id = f"face_{next_idx}"
+            print(f"Выбрано лицо {next_idx + 1} из {len(faces)}")
+
+except KeyboardInterrupt:
+    print("\nПрограмма прервана")
+
+except Exception as e:
+    print(f"\nОшибка: {e}")
+
+finally:
+    # Освобождаем ресурсы
+    if 'cap' in locals():
+        cap.release()
+    cv2.destroyAllWindows()
+
+    # Сохранение базы
+    print("\n" + "=" * 50)
+    print("СОХРАНЕННЫЕ ЛИЦА:")
+    print("=" * 50)
+    if len(face_recognizer.known_faces) == 0:
+        print("Нет сохраненных лиц")
+    else:
+        for name, samples in face_recognizer.known_faces.items():
+            print(f"  {name}: {len(samples)} образцов")
+    print("=" * 50)
+    print("Программа завершена")
