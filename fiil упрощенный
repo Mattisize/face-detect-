@@ -1,0 +1,45 @@
+# mapy x    ma2.py
+
+## 1
+import cv2
+
+## 2
+# Ошибка 1: Неправильный синтаксис загрузки каскадов
+face_cascade_db = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_eye.xml")
+
+# Ошибка 2: B должен быть числом (например, 0 для веб-камеры)
+cap = cv2.VideoCapture(0)
+
+while True:
+    success, img = cap.read()
+    if not success:
+        break
+
+    # img = cv2.imread("IMG_20191812_145419_3.jpg")
+    img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)  # Ошибка 3: evtColor -> cvtColor
+
+    # Ошибка 4: detectMultiscale -> detectMultiScale, неправильные параметры
+    faces = face_cascade_db.detectMultiScale(img_gray, scaleFactor=1.1, minNeighbors=19)
+
+    for (x, y, w, h) in faces:
+        cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 0), 2)  # Ошибка 5: x*w -> x+w
+
+        img_gray_face = img_gray[y:y + h, x:x + w]  # Ошибка 6: x*w -> x+w
+
+        # Ошибка 7: detectMultiscale -> detectMultiScale
+        eyes = eye_cascade.detectMultiScale(img_gray_face, scaleFactor=1.1, minNeighbors=19)
+
+        for (ex, ey, ew, eh) in eyes:
+            cv2.rectangle(img, (x + ex, y + ey), (x + ex + ew, y + ey + eh), (255, 0, 0), 2)
+
+    # Ошибка 8: inshow -> imshow, неправильный синтаксис параметров
+    cv2.imshow('rez', img)
+
+    # Ошибка 9: точка с запятой вместо двоеточия
+    if cv2.waitKey(1) & 0xff == ord('q'):
+        break
+
+# Эти строки должны быть ВНЕ цикла while
+cap.release()
+cv2.destroyAllWindows()
