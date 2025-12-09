@@ -1,0 +1,307 @@
+# -*- coding: utf-8 -*-
+import cv2
+import os
+import json
+import numpy as np
+import time
+
+# Initialize face detector
+face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+
+# Face storage
+known_faces = {}
+faces_dir = "faces_data"
+data_file = "faces.json"
+
+def setup():
+    """Initial setup"""
+    if not os.path.exists(faces_dir):
+        os.makedirs(faces_dir)
+    load_data()
+
+def load_data():
+    """Load saved faces"""
+    global known_faces
+    try:
+        if os.path.exists(data_file):
+            with open(data_file, 'r') as f:
+                known_faces = json.load(f)
+            print(f"Loaded {len(known_faces)} known faces")
+    except:
+        known_faces = {}
+
+def save_data():
+    """Save faces data"""
+    with open(data_file, 'w') as f:
+        json.dump(known_faces, f)
+
+def recognize(face_img):
+    """Recognize face"""
+    if not known_faces:
+        return None, 0
+    
+    best_name = None
+    best_score = 0
+    
+    for name, samples in known_faces.items():
+        for sample_file in samples:
+            if os.path.exists(sample_file):
+                sample = cv2.imread(sample_file)
+                if sample is not None:
+                    score = compare_faces(face_img, sample)
+                    if score > best_score:
+                        best_score = score
+                        best_name = name
+    
+    return best_name, best_score
+
+def compare_faces(img1, img2):
+    """Compare two faces"""
+    try:
+        # Resize to same size
+        img1 = cv2.resize(img1, (100, 100))
+        img2 = cv2.resize(img2, (100, 100))
+        
+        # Convert to grayscale
+        if len(img1.shape) == 3:
+            img1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
+        if len(img2.shape) == 3:
+            img2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
+        
+        # Calculate difference
+        diff = cv2.absdiff(img1, img2)
+        score = 100 - (np.mean(diff) / 255 * 100)
+        return max(0, min(100, score))
+    except:
+        return 0
+
+def get_color_by_score(score):
+    """Get color based on similarity score"""
+    if score == 0:  # Unknown face
+        return (0, 0, 255)  # Red
+    elif score <= 60:  # Low similarity
+        return (0, 165, 255)  # Orange
+    elif score <= 80:  # Medium similarity
+        return (0, 255, 255)  # Yellow
+    else:  # High similarity
+        return (0, 255, 0)  # Green
+
+def get_status_by_score(score):
+    """Get status text based on score"""
+    if score == 0:
+        return "UNKNOWN"
+    elif score <= 60:
+        return "LOW SIMILARITY"
+    elif score <= 80:
+        return "MEDIUM SIMILARITY"
+    else:
+        return "HIGH SIMILARITY"
+
+def add_face(name, face_img):
+    """Add new face to database"""
+    timestamp = int(time.time())
+    
+    # Save image
+    filename = f"{faces_dir}/{name}_{timestamp}.jpg"
+    cv2.imwrite(filename, face_img)
+    
+    # Add to database
+    if name not in known_faces:
+        known_faces[name] = []
+    known_faces[name].append(filename)
+    
+    save_data()
+    print(f"Added: {name}")
+
+def run_camera():
+    """Run camera with face recognition"""
+    cap = cv2.VideoCapture(0)
+    
+    if not cap.isOpened():
+        print("Error: Cannot open camera")
+        return
+    
+    print("\nCamera started. Press:")
+    print("  S - save current face")
+    print("  Q - quit")
+    print("-" * 30)
+    
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("Error: Cannot read frame")
+            break
+        
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = face_cascade.detectMultiScale(gray, 1.3, 5)
+        
+        for (x, y, w, h) in faces:
+            face_img = frame[y:y+h, x:x+w]
+            
+            # Recognize face
+            name, score = recognize(face_img)
+            
+            # Get color based on score
+            color = get_color_by_score(score)
+            
+            # Create text
+            if name:
+                status = get_status_by_score(score)
+                text = f"{name}: {status} ({score:.0f}%)"
+            else:
+                text = "UNKNOWN"
+            
+            # Draw rectangle
+            cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
+            
+            # Draw background for text (better readability)
+            text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
+            cv2.rectangle(frame, (x, y-30), (x+text_size[0], y), color, -1)
+            cv2.rectangle(frame, (x, y-30), (x+text_size[0], y), color, 2)
+            
+            # Draw text
+            text_color = (255, 255, 255)  # White text
+            cv2.putText(frame, text, (x, y-10), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, text_color, 2)
+        
+        # Information in corner
+        info_text = f"Known faces: {len(known_faces)} | Detected: {len(faces)}"
+        cv2.putText(frame, info_text, (10, 30),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        
+        # Color legend
+        legend_y = 60
+        cv2.putText(frame, "Recognition colors:", (10, legend_y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+        
+        colors_info = [
+            ("Green: >80%", (0, 255, 0)),
+            ("Yellow: 61-80%", (0, 255, 255)),
+            ("Orange: <=60%", (0, 165, 255)),
+            ("Red: unknown", (0, 0, 255))
+        ]
+        
+        for i, (text, color) in enumerate(colors_info):
+            y_pos = legend_y + 25 + (i * 25)
+            # Color square
+            cv2.rectangle(frame, (10, y_pos-15), (25, y_pos), color, -1)
+            cv2.rectangle(frame, (10, y_pos-15), (25, y_pos), (255, 255, 255), 1)
+            # Text
+            cv2.putText(frame, text, (35, y_pos),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        
+        # Commands
+        cv2.putText(frame, "S - save, Q - quit", (10, frame.shape[0] - 20),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+        
+        cv2.imshow('Face Recognition', frame)
+        
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q') or key == ord('Q'):
+            break
+        elif key == ord('s') or key == ord('S'):
+            if len(faces) > 0:
+                save_face(frame, faces[0])
+    
+    cap.release()
+    cv2.destroyAllWindows()
+
+def save_face(frame, face_coords):
+    """Save current face"""
+    x, y, w, h = face_coords
+    face_img = frame[y:y+h, x:x+w]
+    
+    print("\n" + "-" * 30)
+    name = input("Enter name for this face: ").strip()
+    
+    if name:
+        add_face(name, face_img)
+    else:
+        print("Name cannot be empty")
+
+def show_list():
+    """Show list of known faces"""
+    print("\n" + "=" * 40)
+    print("KNOWN FACES")
+    print("=" * 40)
+    
+    if known_faces:
+        for name, files in known_faces.items():
+            print(f"{name}: {len(files)} samples")
+            for file in files[:2]:  # Show first 2 files
+                print(f"  - {os.path.basename(file)}")
+            if len(files) > 2:
+                print(f"  ... and {len(files) - 2} more")
+            print()
+    else:
+        print("No faces saved")
+    
+    print("=" * 40)
+
+def clear_all():
+    """Clear all data"""
+    confirm = input("\nDelete ALL data? (yes/no): ").lower()
+    if confirm == 'yes' or confirm == 'y':
+        import shutil
+        try:
+            # Delete images folder
+            if os.path.exists(faces_dir):
+                shutil.rmtree(faces_dir)
+            # Delete data file
+            if os.path.exists(data_file):
+                os.remove(data_file)
+            # Clear dictionary
+            known_faces.clear()
+            # Recreate folder
+            os.makedirs(faces_dir)
+            print("All data cleared successfully")
+        except Exception as e:
+            print(f"Error: {e}")
+    else:
+        print("Cancelled")
+
+def main():
+    """Main menu"""
+    setup()
+    
+    while True:
+        print("\n" + "=" * 40)
+        print("FACE RECOGNITION SYSTEM")
+        print("=" * 40)
+        print("1. Start camera recognition")
+        print("2. Show list of known faces")
+        print("3. Clear all data")
+        print("4. Exit")
+        print("=" * 40)
+        
+        try:
+            choice = input("Choose option (1-4): ").strip()
+            
+            if choice == '1':
+                run_camera()
+            elif choice == '2':
+                show_list()
+            elif choice == '3':
+                clear_all()
+            elif choice == '4':
+                print("\nGoodbye!")
+                break
+            else:
+                print("Invalid choice! Please enter 1-4")
+        except KeyboardInterrupt:
+            print("\n\nProgram interrupted")
+            break
+        except Exception as e:
+            print(f"Error: {e}")
+
+if __name__ == "__main__":
+    # Check OpenCV
+    try:
+        print(f"OpenCV version: {cv2.__version__}")
+        print("Starting Face Recognition System...")
+        main()
+    except ImportError:
+        print("Error: Required libraries not installed")
+        print("Install with: pip install opencv-python numpy")
+    except Exception as e:
+        print(f"Error: {e}")
